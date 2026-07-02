@@ -186,13 +186,26 @@ function optsForCurrentBucket(): CorpusOptions {
 }
 
 let CACHE: DemoCallWire[] | null = null;
-let CACHE_BUCKET = -1;
+/** Cache key = `${bucket}|${YYYY-MM-DD}`. Combining both means cache
+ *  invalidates on either bucket rollover (every 2h) OR calendar-day
+ *  rollover — the day check is a safety net for edge cases where the
+ *  browser preserved module state across midnight in a way that let
+ *  a stale corpus slip through the bucket-only check. */
+let CACHE_KEY: string | null = null;
+
+function currentCacheKey(): string {
+  const d = new Date();
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${currentBucket()}|${y}-${m}-${day}`;
+}
 
 export function getDemoCalls(): DemoCallWire[] {
-  const bucket = currentBucket();
-  if (CACHE && CACHE_BUCKET === bucket) return CACHE;
+  const key = currentCacheKey();
+  if (CACHE && CACHE_KEY === key) return CACHE;
   CACHE = buildCorpus(optsForCurrentBucket());
-  CACHE_BUCKET = bucket;
+  CACHE_KEY = key;
   return CACHE;
 }
 
@@ -290,29 +303,33 @@ function makeCall(
   };
 }
 
-/* ─── Filter helpers — everything that reads today's calls goes through
- *   these so the topbar TOTAL, donut, hourly chart, and dialer tiles all
- *   grow cumulatively through the day rather than showing the projected
- *   end-of-day total from t=0.
- * ────────────────────────────────────────────────────────────────────── */
+/* ─── Cumulative filter helpers ──────────────────────────────────────────
+ *   TOTAL grows through the day per the client's cumulative spec:
+ *     8am→300, 9am→700, 10am→900, 11am→1900, 12pm→2400, 1pm→3000,
+ *     2pm→4500, 3pm→5500, 4pm→6500.
+ *   These helpers filter out today's future-timestamped calls so the
+ *   topbar TOTAL, donut, dialer tiles, and hourly chart all reflect
+ *   "cumulative up to now", not the projected end-of-day total. */
 
-/** All corpus calls that have "already happened" — past days pass
- *  unchanged; today's future-timestamped calls are filtered out. */
+/** All corpus calls that have happened as of now — past days pass through
+ *  unchanged; today's future-timestamped calls are held back. */
 export function visibleCalls(): DemoCallWire[] {
   const now = Date.now();
-  return getDemoCalls().filter((c) => Date.parse(c.created_at) <= now);
+  return getDemoCalls().filter((c) => {
+    const ts = Date.parse(c.created_at);
+    return Number.isFinite(ts) && ts <= now;
+  });
 }
 
-/** Today-so-far — same "visible" filter, additionally clipped to today.
- *  At 11:49 AM EST this returns the calls that have happened between
- *  midnight and 11:49 AM (approx 1,700 with our HOUR_WEIGHTS curve),
- *  not the projected full-day count of 6,500. */
+/** Today-so-far — calls between startOfToday and now. At 12:28 PM this
+ *  returns roughly 2,100 calls (per client's 12pm→2,400 cumulative
+ *  target), not the projected end-of-day 6,500. */
 export function todaysCalls(): DemoCallWire[] {
   const start = startOfToday();
   const now = Date.now();
   return getDemoCalls().filter((c) => {
     const ts = Date.parse(c.created_at);
-    return ts >= start && ts <= now;
+    return Number.isFinite(ts) && ts >= start && ts <= now;
   });
 }
 

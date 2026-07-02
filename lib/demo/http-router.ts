@@ -676,10 +676,9 @@ route("GET", "/api/spam/reports", () => ({ items: [], total: 0 }));
 /* ─── Calls + Analytics ────────────────────────────────────────────── */
 
 route("GET", "/api/analytics/calls", (req) => {
-  // Return only calls that have "already happened" — future-timestamped
-  // calls from today's corpus are filtered out so the topbar TOTAL, the
-  // hourly chart, and the donut all reflect "cumulative up to now"
-  // rather than the projected end-of-day total.
+  // Return only calls that have already happened — the topbar TOTAL, the
+  // hourly chart, and the donut all reflect "cumulative up to now" per
+  // the client's spec (8am→300, 9am→700, ..., 4pm→6,500).
   //
   // Important: `analyticsService.calls()` translates `pageSize` → `limit`
   // and `page` → `offset` on the wire, so we read those, not page_size.
