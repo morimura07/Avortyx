@@ -124,11 +124,49 @@ function makePhone(rng: () => number): string {
   return `+1${ac}${tail}`;
 }
 
-/** Snap to local midnight of today. */
+/** Snap to midnight of today in EST/EDT, expressed as UTC milliseconds.
+ *
+ *  Used to anchor both corpus generation and the today-so-far filter, so
+ *  the demo behaves identically no matter what timezone the user's
+ *  browser is in. Previously this used the browser's local midnight,
+ *  which broke when the user was more than a few hours off EST — the
+ *  corpus generated calls at "local 8am-4pm" while the user's clock was
+ *  at "local 2am", making every call filter as "in the future" and
+ *  TOTAL read 0.
+ *
+ *  Handles both EST (UTC-5) and EDT (UTC-4) automatically by asking
+ *  Intl.DateTimeFormat what the current wall-clock time is in
+ *  America/New_York, then computing the corresponding UTC offset. */
 function startOfToday(): number {
-  const d = new Date();
-  d.setHours(0, 0, 0, 0);
-  return d.getTime();
+  const now = new Date();
+  const fmt = new Intl.DateTimeFormat("en-US", {
+    timeZone: "America/New_York",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: false,
+  });
+  const parts = fmt.formatToParts(now);
+  const get = (t: string) => {
+    const p = parts.find((p) => p.type === t)?.value ?? "0";
+    return parseInt(p, 10);
+  };
+  const y = get("year");
+  const m = get("month");
+  const d = get("day");
+  const hh = get("hour") % 24; // Intl sometimes reports 24 for midnight
+  const mm = get("minute");
+  const ss = get("second");
+
+  // "EST wall-clock time expressed AS IF it were UTC" — the delta from
+  // the actual UTC ms tells us EST's offset (–4 or –5 hours).
+  const asIfUtc = Date.UTC(y, m - 1, d, hh, mm, ss);
+  const estOffsetMs = asIfUtc - now.getTime();
+  // Midnight EST as UTC ms = today's date at 00:00 EST, converted to UTC.
+  return Date.UTC(y, m - 1, d, 0, 0, 0) - estOffsetMs;
 }
 
 export interface DemoCallWire {
