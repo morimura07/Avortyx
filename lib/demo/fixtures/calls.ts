@@ -290,11 +290,30 @@ function makeCall(
   };
 }
 
-/* ─── Today-only filter helper for the live KPI snapshot ──────────────── */
+/* ─── Filter helpers — everything that reads today's calls goes through
+ *   these so the topbar TOTAL, donut, hourly chart, and dialer tiles all
+ *   grow cumulatively through the day rather than showing the projected
+ *   end-of-day total from t=0.
+ * ────────────────────────────────────────────────────────────────────── */
 
+/** All corpus calls that have "already happened" — past days pass
+ *  unchanged; today's future-timestamped calls are filtered out. */
+export function visibleCalls(): DemoCallWire[] {
+  const now = Date.now();
+  return getDemoCalls().filter((c) => Date.parse(c.created_at) <= now);
+}
+
+/** Today-so-far — same "visible" filter, additionally clipped to today.
+ *  At 11:49 AM EST this returns the calls that have happened between
+ *  midnight and 11:49 AM (approx 1,700 with our HOUR_WEIGHTS curve),
+ *  not the projected full-day count of 6,500. */
 export function todaysCalls(): DemoCallWire[] {
   const start = startOfToday();
-  return getDemoCalls().filter((c) => Date.parse(c.created_at) >= start);
+  const now = Date.now();
+  return getDemoCalls().filter((c) => {
+    const ts = Date.parse(c.created_at);
+    return ts >= start && ts <= now;
+  });
 }
 
 /* ─── Live (in-flight) call snapshot ──────────────────────────────────── */

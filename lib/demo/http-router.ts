@@ -41,6 +41,7 @@ import {
   getDemoCalls,
   generateLiveCalls,
   dashboardSnapshot,
+  visibleCalls,
   type DemoCallWire,
 } from "./fixtures/calls";
 import { bucketRange } from "./bucket";
@@ -675,15 +676,14 @@ route("GET", "/api/spam/reports", () => ({ items: [], total: 0 }));
 /* ─── Calls + Analytics ────────────────────────────────────────────── */
 
 route("GET", "/api/analytics/calls", (req) => {
-  // Dashboards and report aggregates ask for big windows (limit ≥ 100) so
-  // they can client-side bucket the data into charts. For those, return the
-  // entire corpus so the donut totals + hourly distribution look full. For
-  // the Call Log table's normal paging (limit ≤ 50), respect paging so the
-  // pagination UI stays coherent.
+  // Return only calls that have "already happened" — future-timestamped
+  // calls from today's corpus are filtered out so the topbar TOTAL, the
+  // hourly chart, and the donut all reflect "cumulative up to now"
+  // rather than the projected end-of-day total.
   //
   // Important: `analyticsService.calls()` translates `pageSize` → `limit`
   // and `page` → `offset` on the wire, so we read those, not page_size.
-  const all = getDemoCalls();
+  const all = visibleCalls();
   const limit = Number(req.query.limit ?? req.query.page_size ?? req.query.pageSize ?? "25") || 25;
   if (limit >= 100) {
     return { items: all, total: all.length, offset: 0, limit: all.length };
@@ -698,7 +698,7 @@ route("GET", "/api/analytics/calls", (req) => {
 });
 
 route("GET", "/api/routing/calls", (req) => {
-  const all = getDemoCalls();
+  const all = visibleCalls();
   const limit = Number(req.query.limit ?? req.query.page_size ?? req.query.pageSize ?? "25") || 25;
   if (limit >= 100) {
     return { items: all, total: all.length, offset: 0, limit: all.length };
