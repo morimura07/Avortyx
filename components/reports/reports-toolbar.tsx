@@ -21,7 +21,8 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { TIMEZONES as TZ_OPTIONS } from "@/lib/timezones";
+import { getDemoTimezone, setDemoTimezone } from "@/lib/demo/tz";
+import { TIMEZONES as TZ_OPTIONS, TIMEZONE_BY_IANA } from "@/lib/timezones";
 import { useTranslation } from "@/hooks/use-translation";
 import { cn } from "@/lib/utils";
 
@@ -110,11 +111,31 @@ export function ReportsToolbar({
   onVisibilityChange,
 }: ReportsToolbarProps) {
   const { t } = useTranslation();
-  // Default to Eastern Time — first entry in the curated list that matches.
-  const [tz, setTz] = useState<string>(
-    TZ_OPTIONS.find((t) => t.iana === "America/New_York")?.label ??
-      TZ_OPTIONS[0].label,
-  );
+  // Hydrate from the shared demo-timezone store so this dropdown stays
+  // in sync with the Live Monitor's picker — pick either surface and
+  // every chart / KPI on the site respects the choice.
+  const [tz, setTz] = useState<string>(() => {
+    const iana = getDemoTimezone();
+    return TIMEZONE_BY_IANA[iana]?.label ?? TZ_OPTIONS[0].label;
+  });
+  useEffect(() => {
+    const iana = getDemoTimezone();
+    const label = TIMEZONE_BY_IANA[iana]?.label;
+    if (label && label !== tz) setTz(label);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+  const onTzChange = (label: string) => {
+    setTz(label);
+    // Reverse-lookup: find the IANA id for this label, write to the shared
+    // demo-timezone store, then hard-reload so every chart + KPI on the
+    // page re-anchors to the new timezone. Matches the Live Monitor's
+    // picker behavior.
+    const match = TZ_OPTIONS.find((opt) => opt.label === label);
+    if (match) {
+      setDemoTimezone(match.iana);
+      if (typeof window !== "undefined") window.location.reload();
+    }
+  };
   const [refresh, setRefresh] = useState<RefreshOption>("Auto refresh");
 
   // Live ticking countdown: seconds remaining until the next auto-refresh fires.
@@ -230,7 +251,7 @@ export function ReportsToolbar({
             {TZ_OPTIONS.map((t) => (
               <DropdownMenuItem
                 key={t.iana}
-                onSelect={() => setTz(t.label)}
+                onSelect={() => onTzChange(t.label)}
                 className={cn(tz === t.label && "text-accent")}
               >
                 {t.label}

@@ -12,6 +12,7 @@
 
 import { makeRng, pick, intRange, range, chance } from "../rng";
 import { currentBucket, bucketInt, bucketRange } from "../bucket";
+import { getDemoTimezone, startOfDayInTimeZone } from "../tz";
 
 const DAY = 24 * 60 * 60 * 1000;
 const HOUR = 60 * 60 * 1000;
@@ -124,49 +125,13 @@ function makePhone(rng: () => number): string {
   return `+1${ac}${tail}`;
 }
 
-/** Snap to midnight of today in EST/EDT, expressed as UTC milliseconds.
- *
- *  Used to anchor both corpus generation and the today-so-far filter, so
- *  the demo behaves identically no matter what timezone the user's
- *  browser is in. Previously this used the browser's local midnight,
- *  which broke when the user was more than a few hours off EST — the
- *  corpus generated calls at "local 8am-4pm" while the user's clock was
- *  at "local 2am", making every call filter as "in the future" and
- *  TOTAL read 0.
- *
- *  Handles both EST (UTC-5) and EDT (UTC-4) automatically by asking
- *  Intl.DateTimeFormat what the current wall-clock time is in
- *  America/New_York, then computing the corresponding UTC offset. */
+/** Snap to midnight of today in the user's currently-selected demo
+ *  timezone, expressed as UTC ms. Used to anchor both corpus generation
+ *  and the today-so-far filter, so the demo respects whatever timezone
+ *  the user picked in the dropdown (Live Monitor / Reports toolbar).
+ *  Falls back to EST if no selection has been made. */
 function startOfToday(): number {
-  const now = new Date();
-  const fmt = new Intl.DateTimeFormat("en-US", {
-    timeZone: "America/New_York",
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-    second: "2-digit",
-    hour12: false,
-  });
-  const parts = fmt.formatToParts(now);
-  const get = (t: string) => {
-    const p = parts.find((p) => p.type === t)?.value ?? "0";
-    return parseInt(p, 10);
-  };
-  const y = get("year");
-  const m = get("month");
-  const d = get("day");
-  const hh = get("hour") % 24; // Intl sometimes reports 24 for midnight
-  const mm = get("minute");
-  const ss = get("second");
-
-  // "EST wall-clock time expressed AS IF it were UTC" — the delta from
-  // the actual UTC ms tells us EST's offset (–4 or –5 hours).
-  const asIfUtc = Date.UTC(y, m - 1, d, hh, mm, ss);
-  const estOffsetMs = asIfUtc - now.getTime();
-  // Midnight EST as UTC ms = today's date at 00:00 EST, converted to UTC.
-  return Date.UTC(y, m - 1, d, 0, 0, 0) - estOffsetMs;
+  return startOfDayInTimeZone(getDemoTimezone());
 }
 
 export interface DemoCallWire {
@@ -236,7 +201,11 @@ function currentCacheKey(): string {
   const y = d.getFullYear();
   const m = String(d.getMonth() + 1).padStart(2, "0");
   const day = String(d.getDate()).padStart(2, "0");
-  return `${currentBucket()}|${y}-${m}-${day}`;
+  // Include the selected timezone so the corpus rebuilds when the user
+  // switches timezones — otherwise the cached calls would still be
+  // anchored to the old timezone's midnight and the chart would show
+  // bars at the wrong hours.
+  return `${currentBucket()}|${y}-${m}-${day}|${getDemoTimezone()}`;
 }
 
 export function getDemoCalls(): DemoCallWire[] {
@@ -373,18 +342,17 @@ export function todaysCalls(): DemoCallWire[] {
 
 /* ─── Live (in-flight) call snapshot ──────────────────────────────────── */
 
-/** Return the current hour (0–23) in America/New_York, honoring EDT/EST
- *  as appropriate. Used to swing `liveCallsCount()` between peak, business,
- *  and off-hours bands. */
+/** Return the current hour (0–23) in the user's selected demo timezone.
+ *  Used to swing `liveCallsCount()` between peak, business, and
+ *  off-hours bands so the LIVE tile tracks the "operational day" as the
+ *  user is viewing it, not their PC's timezone. */
 function currentESTHour(): number {
   try {
     const s = new Date().toLocaleString("en-US", {
       hour: "numeric",
       hour12: false,
-      timeZone: "America/New_York",
+      timeZone: getDemoTimezone(),
     });
-    // toLocaleString with hour12:false returns "0"–"23" (Node) or "24"
-    // for midnight in some engines — clamp defensively.
     const h = parseInt(s, 10);
     if (!Number.isFinite(h)) return 12;
     return h === 24 ? 0 : h;

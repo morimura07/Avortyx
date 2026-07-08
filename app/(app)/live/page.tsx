@@ -20,11 +20,9 @@ import {
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useLiveSocket } from "@/hooks/use-live-socket";
 import { useTranslation } from "@/hooks/use-translation";
+import { DEFAULT_DEMO_TIMEZONE, getDemoTimezone, setDemoTimezone } from "@/lib/demo/tz";
 import { TIMEZONES, TIMEZONE_BY_IANA } from "@/lib/timezones";
 import { cn } from "@/lib/utils";
-
-const TIMEZONE_STORAGE_KEY = "avortyx.live.timezone";
-const DEFAULT_TIMEZONE = "America/New_York"; // EST — per client's operational default
 
 export default function LivePage() {
   const { t, locale } = useTranslation();
@@ -36,22 +34,19 @@ export default function LivePage() {
   // per the client's operational default, persisted in localStorage so
   // the choice survives reloads. Deferred read after mount so SSR and
   // the first client paint don't disagree.
-  const [timezone, setTimezone] = useState<string>(DEFAULT_TIMEZONE);
+  const [timezone, setTimezone] = useState<string>(DEFAULT_DEMO_TIMEZONE);
   useEffect(() => {
-    try {
-      const stored = window.localStorage.getItem(TIMEZONE_STORAGE_KEY);
-      if (stored && TIMEZONE_BY_IANA[stored]) setTimezone(stored);
-    } catch {
-      // localStorage unavailable — keep the default.
-    }
+    const stored = getDemoTimezone();
+    if (TIMEZONE_BY_IANA[stored]) setTimezone(stored);
   }, []);
   const onTimezoneChange = (iana: string) => {
     setTimezone(iana);
-    try {
-      window.localStorage.setItem(TIMEZONE_STORAGE_KEY, iana);
-    } catch {
-      // Storage quota / private mode — ignore.
-    }
+    setDemoTimezone(iana);
+    // Force a full reload so every corpus bucket + chart + KPI re-anchors
+    // to the newly-selected timezone. The demo router keys its corpus on
+    // the selected tz, but React state already in memory (topbar TOTAL,
+    // reports chart, dashboard sparklines) won't refetch on its own.
+    if (typeof window !== "undefined") window.location.reload();
   };
   const timezoneLabel = TIMEZONE_BY_IANA[timezone]?.label ?? timezone;
 

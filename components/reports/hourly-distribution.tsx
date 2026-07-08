@@ -16,6 +16,7 @@ import {
 
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { useTranslation } from "@/hooks/use-translation";
+import { getDemoTimezone, hourInTimeZone, startOfDayInTimeZone } from "@/lib/demo/tz";
 import type { Call } from "@/lib/types";
 import { formatCurrency, formatNumber } from "@/lib/format";
 import { cn } from "@/lib/utils";
@@ -74,30 +75,26 @@ function fmt12Hour(h: number): string {
 }
 
 function bucketize(calls: Call[], grain: Grain): Bucket[] {
-  const now = new Date();
   const day = 24 * 60 * 60 * 1000;
+  // Anchor everything to the demo's selected timezone (Live Monitor +
+  // Reports toolbar both write to the same store) so bars appear at the
+  // correct hours in whatever timezone the user picked — not at their
+  // PC's local hours.
+  const tz = getDemoTimezone();
+  const startOfDayMs = startOfDayInTimeZone(tz);
 
   if (grain === "H") {
-    // 24 hour-buckets for today (00:00 → 23:00 local), aggregated from the
-    // passed-in calls. The legacy HOURLY_REF silhouette is no longer used —
-    // the chart now reflects real call data the same way Day and Month grains do.
-    const startOfDay = new Date(now);
-    startOfDay.setHours(0, 0, 0, 0);
-    const slots: Bucket[] = Array.from({ length: 24 }, (_, h) => {
-      const d = new Date(startOfDay);
-      d.setHours(h, 0, 0, 0);
-      return {
-        label: fmt12Hour(h),
-        ts: d.getTime(),
-        converted: 0,
-        notConverted: 0,
-        noAnswer: 0,
-        revenue: 0,
-      };
-    });
+    const slots: Bucket[] = Array.from({ length: 24 }, (_, h) => ({
+      label: fmt12Hour(h),
+      ts: startOfDayMs + h * 60 * 60 * 1000,
+      converted: 0,
+      notConverted: 0,
+      noAnswer: 0,
+      revenue: 0,
+    }));
     for (const c of calls) {
-      if (c.startedAt < startOfDay.getTime()) continue;
-      const hour = new Date(c.startedAt).getHours();
+      if (c.startedAt < startOfDayMs) continue;
+      const hour = hourInTimeZone(c.startedAt, tz);
       if (hour < 0 || hour >= 24) continue;
       const k = classify(c);
       slots[hour][k] += 1;
@@ -109,10 +106,8 @@ function bucketize(calls: Call[], grain: Grain): Bucket[] {
   if (grain === "D") {
     // Last 14 days
     const days = 14;
-    const start = new Date(now);
-    start.setHours(0, 0, 0, 0);
     const slots: Bucket[] = Array.from({ length: days }, (_, i) => {
-      const d = new Date(start.getTime() - (days - 1 - i) * day);
+      const d = new Date(startOfDayMs - (days - 1 - i) * day);
       return {
         label: `${(d.getMonth() + 1).toString().padStart(2, "0")}-${d.getDate().toString().padStart(2, "0")}`,
         ts: d.getTime(),
@@ -123,9 +118,8 @@ function bucketize(calls: Call[], grain: Grain): Bucket[] {
       };
     });
     for (const c of calls) {
-      const d = new Date(c.startedAt);
-      d.setHours(0, 0, 0, 0);
-      const offsetDays = Math.round((start.getTime() - d.getTime()) / day);
+      const dayStartMs = startOfDayInTimeZone(tz, new Date(c.startedAt));
+      const offsetDays = Math.round((startOfDayMs - dayStartMs) / day);
       if (offsetDays < 0 || offsetDays >= days) continue;
       const idx = days - 1 - offsetDays;
       const k = classify(c);
@@ -137,10 +131,8 @@ function bucketize(calls: Call[], grain: Grain): Bucket[] {
 
   // M: last 30 days grouped into 5 weekly buckets
   const weeks = 5;
-  const start = new Date(now);
-  start.setHours(0, 0, 0, 0);
   const slots: Bucket[] = Array.from({ length: weeks }, (_, i) => {
-    const d = new Date(start.getTime() - (weeks - 1 - i) * 7 * day);
+    const d = new Date(startOfDayMs - (weeks - 1 - i) * 7 * day);
     return {
       label: `${(d.getMonth() + 1).toString().padStart(2, "0")}-${d.getDate().toString().padStart(2, "0")}`,
       ts: d.getTime(),
@@ -151,7 +143,7 @@ function bucketize(calls: Call[], grain: Grain): Bucket[] {
     };
   });
   for (const c of calls) {
-    const offsetDays = Math.round((start.getTime() - c.startedAt) / day);
+    const offsetDays = Math.round((startOfDayMs - c.startedAt) / day);
     if (offsetDays < 0 || offsetDays >= weeks * 7) continue;
     const weekFromOldest = weeks - 1 - Math.floor(offsetDays / 7);
     const k = classify(c);
