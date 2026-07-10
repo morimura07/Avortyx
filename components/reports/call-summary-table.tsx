@@ -30,6 +30,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import type { Call } from "@/lib/types";
+import { getDemoTimezone } from "@/lib/demo/tz";
 import { dateStamped, downloadRows, type ExportColumn, type ExportFormat } from "@/lib/export";
 import { formatCurrency, formatNumber, formatPercent, formatTimer, toE164 } from "@/lib/format";
 import { useTranslation } from "@/hooks/use-translation";
@@ -434,6 +435,35 @@ function hashOf(s: string): number {
   return Math.abs(h);
 }
 
+/**
+ * Per-row ACL (average call length in seconds), seeded on the row key +
+ * today's calendar date in the selected demo timezone. Falls in the
+ * client-specified band 18:05 – 23:33 (1085s – 1413s). Seeding by
+ * today's date means:
+ *   – within a single day every row keeps a stable, believable ACL,
+ *   – tomorrow the same rows get a fresh spread.
+ *
+ * The summary table's TCL cell is then derived as `acl × connected`, so
+ * the two columns reconcile (client requirement: "it should match with
+ * the TCL"). The totals row's ACL comes out as the connected-weighted
+ * mean since `t.acl = sum(row.acl × row.connected) / sum(row.connected)`
+ * — which is exactly what "average of all camps" means once you account
+ * for the fact that campaigns with more calls should pull the average
+ * more strongly.
+ */
+const ACL_MIN_SEC = 18 * 60 + 5;  // 18:05
+const ACL_MAX_SEC = 23 * 60 + 33; // 23:33
+function seededAclFor(rowKey: string): number {
+  const day = new Intl.DateTimeFormat("en-CA", {
+    timeZone: getDemoTimezone(),
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).format(new Date());
+  const range = ACL_MAX_SEC - ACL_MIN_SEC + 1;
+  return ACL_MIN_SEC + (hashOf(rowKey + "|acl|" + day) % range);
+}
+
 /** Pick a stable bucket from a list using id + salt. */
 function pickFrom(c: Call, salt: string, list: string[]): string {
   return list[hashOf(c.id + salt) % list.length];
@@ -672,7 +702,16 @@ function groupCalls(calls: Call[], group: GroupKey): SummaryRow[] {
 
   for (const row of m.values()) {
     row.conversionRate = row.incoming > 0 ? row.converted / row.incoming : 0;
-    row.acl = row.connected > 0 ? Math.round(row.tcl / row.connected) : 0;
+    // Override the corpus-derived ACL with a per-row seeded value in the
+    // client-specified 18:05–23:33 band, then rewrite TCL = ACL × connected
+    // so the two columns reconcile. Empty rows fall back to zero.
+    if (row.connected > 0) {
+      row.acl = seededAclFor(row.key);
+      row.tcl = row.acl * row.connected;
+    } else {
+      row.acl = 0;
+      row.tcl = 0;
+    }
   }
 
   return Array.from(m.values()).sort((a, b) => b.revenue - a.revenue);
