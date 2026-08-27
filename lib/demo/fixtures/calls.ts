@@ -125,6 +125,26 @@ function makePhone(rng: () => number): string {
   return `+1${ac}${tail}`;
 }
 
+/**
+ * Public, CORS-open sample MP3s used as stand-ins for call recordings
+ * in demo mode. SoundHelix hosts these under a permissive license and
+ * they're a widely-used choice for HTML5 audio demos, so they stream
+ * reliably in the browser without any auth or preflight surprises.
+ */
+const DEMO_RECORDING_URLS = [
+  "https://www.soundhelix.com/examples/mp3/SoundHelix-Song-1.mp3",
+  "https://www.soundhelix.com/examples/mp3/SoundHelix-Song-2.mp3",
+  "https://www.soundhelix.com/examples/mp3/SoundHelix-Song-5.mp3",
+  "https://www.soundhelix.com/examples/mp3/SoundHelix-Song-8.mp3",
+];
+function pickDemoRecordingUrl(idSuffix: string): string {
+  let h = 0;
+  for (let i = 0; i < idSuffix.length; i++) {
+    h = ((h << 5) - h + idSuffix.charCodeAt(i)) | 0;
+  }
+  return DEMO_RECORDING_URLS[Math.abs(h) % DEMO_RECORDING_URLS.length];
+}
+
 /** Snap to midnight of today in the user's currently-selected demo
  *  timezone, expressed as UTC ms. Used to anchor both corpus generation
  *  and the today-so-far filter, so the demo respects whatever timezone
@@ -303,7 +323,12 @@ function makeCall(
     revenue: revenue.toFixed(2),
     buyer_payout: revenue.toFixed(2),
     publisher_payout: publisherPayout.toFixed(2),
-    recording_url: isConverted ? `https://demo.avortyx.io/rec/${idSuffix}.mp3` : "",
+    // Point recordings at real, publicly-hosted MP3 samples so the
+    // player in the Call Log actually plays audio when the Play button
+    // is clicked. Round-robin across a small pool so different rows get
+    // audibly-different clips. Missed / rejected calls stay URL-less
+    // because they never connected — nothing was recorded.
+    recording_url: isConverted ? pickDemoRecordingUrl(idSuffix) : "",
     created_at: new Date(startedAt).toISOString(),
     tags: isConverted ? ["converted"] : [],
     notes: "",

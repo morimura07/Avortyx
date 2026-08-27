@@ -6,6 +6,7 @@ import {
   Copy,
   DollarSign,
   Download,
+  Pause,
   PhoneOff,
   Play,
   Plus,
@@ -268,6 +269,54 @@ export function CallLogTable({ calls, limit = 50 }: CallLogTableProps) {
   const [pageSize, setPageSize] = React.useState<number>(limit);
   const [page, setPage] = React.useState(0);
 
+  // ── Inline recording playback ──────────────────────────────────────
+  // The Recording column's Play button was previously a decorative icon
+  // with no onClick — clicking it did nothing, which is what the client
+  // flagged as "record button is not active". We hoist a single <audio>
+  // element to the table and route every row's button through it so
+  // only one recording plays at a time (pauses the previous when a new
+  // row is clicked, toggles pause when the same row is re-clicked).
+  const audioRef = React.useRef<HTMLAudioElement | null>(null);
+  const [playingId, setPlayingId] = React.useState<string | null>(null);
+  const togglePlay = React.useCallback((call: Call) => {
+    if (!call.recordingUrl) return;
+    const el = audioRef.current;
+    if (!el) return;
+    if (playingId === call.id) {
+      el.pause();
+      setPlayingId(null);
+      return;
+    }
+    // Flip the UI to "playing" IMMEDIATELY so the button reads as Pause
+    // the instant the user clicks, even before the audio starts streaming.
+    // The <audio> element's `pause`/`ended`/`error` events (below) roll
+    // the state back if playback never actually begins.
+    setPlayingId(call.id);
+    el.src = call.recordingUrl;
+    el.currentTime = 0;
+    void el.play().catch(() => {
+      // Autoplay policy, CORS block, or 4xx/5xx from the host — surface a
+      // toast so the client understands the button did fire, and clear
+      // the playing state so the icon flips back to Play.
+      setPlayingId((cur) => (cur === call.id ? null : cur));
+      toast.error("Recording unavailable");
+    });
+  }, [playingId]);
+  const onAudioEnded = React.useCallback(() => setPlayingId(null), []);
+  const onAudioPause = React.useCallback(() => {
+    // Fires whenever playback stops for any reason — user hit Pause, the
+    // element was interrupted, or the track ran out. Keep the UI in sync.
+    setPlayingId((cur) => {
+      const el = audioRef.current;
+      if (!el) return cur;
+      return el.paused ? null : cur;
+    });
+  }, []);
+  const onAudioError = React.useCallback(() => {
+    setPlayingId(null);
+    toast.error(t("toolsUI.reports.callLog.recording.unavailable") ?? "Recording unavailable");
+  }, [t]);
+
   // Reset to page 0 whenever the result set or page size changes so we never
   // sit past the end of the filtered list.
   React.useEffect(() => {
@@ -487,10 +536,19 @@ export function CallLogTable({ calls, limit = 50 }: CallLogTableProps) {
                             <Button
                               variant="ghost"
                               size="icon"
-                              className="h-7 w-7"
+                              className={cn(
+                                "h-7 w-7",
+                                playingId === c.id && "bg-accent/15 text-accent hover:bg-accent/20 hover:text-accent",
+                              )}
                               aria-label={t("toolsUI.reports.callLog.actions.playRecording")}
+                              aria-pressed={playingId === c.id}
+                              onClick={() => togglePlay(c)}
                             >
-                              <Play className="h-3.5 w-3.5" />
+                              {playingId === c.id ? (
+                                <Pause className="h-3.5 w-3.5" />
+                              ) : (
+                                <Play className="h-3.5 w-3.5" />
+                              )}
                             </Button>
                           ) : (
                             <span className="text-muted-foreground">—</span>
@@ -516,6 +574,16 @@ export function CallLogTable({ calls, limit = 50 }: CallLogTableProps) {
             onPageSize={setPageSize}
           />
         </div>
+        {/* Shared player driven by the row-level Play buttons above.
+            preload="none" so we don't fetch until the user clicks. */}
+        <audio
+          ref={audioRef}
+          onEnded={onAudioEnded}
+          onPause={onAudioPause}
+          onError={onAudioError}
+          preload="none"
+          className="hidden"
+        />
       </CardContent>
     </Card>
   );
