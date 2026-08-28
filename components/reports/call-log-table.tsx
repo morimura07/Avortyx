@@ -303,19 +303,17 @@ export function CallLogTable({ calls, limit = 50 }: CallLogTableProps) {
     });
   }, [playingId]);
   const onAudioEnded = React.useCallback(() => setPlayingId(null), []);
-  const onAudioPause = React.useCallback(() => {
-    // Fires whenever playback stops for any reason — user hit Pause, the
-    // element was interrupted, or the track ran out. Keep the UI in sync.
-    setPlayingId((cur) => {
-      const el = audioRef.current;
-      if (!el) return cur;
-      return el.paused ? null : cur;
-    });
-  }, []);
   const onAudioError = React.useCallback(() => {
     setPlayingId(null);
-    toast.error(t("toolsUI.reports.callLog.recording.unavailable") ?? "Recording unavailable");
-  }, [t]);
+    toast.error("Recording unavailable");
+  }, []);
+  // NOTE: no `onPause` handler. Chromium fires a `pause` event
+  // synchronously when we reassign `el.src` to load a different track,
+  // even before the previous track was actually playing. Wiring a
+  // handler to it would clear `playingId` right after the click set it
+  // and the Play/Pause icon would appear to never toggle. The click
+  // handler above is the single source of truth for the pause action;
+  // `ended` and `error` cover the other legitimate transitions.
 
   // Reset to page 0 whenever the result set or page size changes so we never
   // sit past the end of the filtered list.
@@ -579,7 +577,6 @@ export function CallLogTable({ calls, limit = 50 }: CallLogTableProps) {
         <audio
           ref={audioRef}
           onEnded={onAudioEnded}
-          onPause={onAudioPause}
           onError={onAudioError}
           preload="none"
           className="hidden"

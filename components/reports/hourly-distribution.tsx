@@ -16,7 +16,9 @@ import {
 
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { useTranslation } from "@/hooks/use-translation";
+import type { TimeSeriesPoint } from "@/lib/api/services/analytics.service";
 import { getDemoTimezone, hourInTimeZone, startOfDayInTimeZone } from "@/lib/demo/tz";
+import { useCallsStore } from "@/lib/store/calls-store";
 import type { Call } from "@/lib/types";
 import { formatCurrency, formatNumber } from "@/lib/format";
 import { cn } from "@/lib/utils";
@@ -40,6 +42,12 @@ const COLOR_REVENUE = "var(--accent)";
 
 interface HourlyDistributionProps {
   calls: Call[];
+  /** Optional pre-aggregated series from `/api/analytics/time-series`.
+   *  When provided (or when a matching series is available in the calls
+   *  store), the chart falls back to it if the client-side `calls` array
+   *  is empty — so the bars still show something when the paginated
+   *  call log hasn't loaded or has been filtered down to nothing. */
+  timeSeries?: TimeSeriesPoint[];
 }
 
 interface Bucket {
@@ -153,9 +161,113 @@ function bucketize(calls: Call[], grain: Grain): Bucket[] {
   return slots;
 }
 
-export function HourlyDistribution({ calls }: HourlyDistributionProps) {
+/**
+ * Bucketize aggregated `/api/analytics/time-series` points into the same
+ * Bucket[] shape the chart already renders. Each point's `period` is a
+ * FULL ISO timestamp string (e.g. "2026-08-28T14:00:00Z"), NOT a bare
+ * hour number — the parser here extracts the hour in the user's chosen
+ * timezone and lands the point in the right slot. This lets the "Calls
+ * by hour" chart still render bars when the paginated call log is empty
+ * or hasn't loaded, since the time-series endpoint is server-aggregated
+ * and doesn't depend on the calls store being hydrated.
+ *
+ * "converted" / "noAnswer" split: the time-series point exposes total
+ * calls and converted calls, so noAnswer = calls - converted.
+ */
+function bucketizeTimeSeries(points: TimeSeriesPoint[], grain: Grain): Bucket[] {
+  const day = 24 * 60 * 60 * 1000;
+  const tz = getDemoTimezone();
+  const startOfDayMs = startOfDayInTimeZone(tz);
+
+  const applyPointToSlot = (slot: Bucket, p: TimeSeriesPoint) => {
+    const noAnswer = Math.max(0, p.calls - p.converted);
+    slot.converted += p.converted;
+    slot.noAnswer += noAnswer;
+    slot.revenue += p.revenue;
+  };
+
+  if (grain === "H") {
+    const slots: Bucket[] = Array.from({ length: 24 }, (_, h) => ({
+      label: fmt12Hour(h),
+      ts: startOfDayMs + h * 60 * 60 * 1000,
+      converted: 0,
+      notConverted: 0,
+      noAnswer: 0,
+      revenue: 0,
+    }));
+    for (const p of points) {
+      const ts = Date.parse(p.period);
+      if (!Number.isFinite(ts)) continue;
+      if (ts < startOfDayMs) continue;
+      const hour = hourInTimeZone(ts, tz);
+      if (hour < 0 || hour >= 24) continue;
+      applyPointToSlot(slots[hour], p);
+    }
+    return slots;
+  }
+
+  if (grain === "D") {
+    const days = 14;
+    const slots: Bucket[] = Array.from({ length: days }, (_, i) => {
+      const d = new Date(startOfDayMs - (days - 1 - i) * day);
+      return {
+        label: `${(d.getMonth() + 1).toString().padStart(2, "0")}-${d.getDate().toString().padStart(2, "0")}`,
+        ts: d.getTime(),
+        converted: 0,
+        notConverted: 0,
+        noAnswer: 0,
+        revenue: 0,
+      };
+    });
+    for (const p of points) {
+      const ts = Date.parse(p.period);
+      if (!Number.isFinite(ts)) continue;
+      const dayStartMs = startOfDayInTimeZone(tz, new Date(ts));
+      const offsetDays = Math.round((startOfDayMs - dayStartMs) / day);
+      if (offsetDays < 0 || offsetDays >= days) continue;
+      applyPointToSlot(slots[days - 1 - offsetDays], p);
+    }
+    return slots;
+  }
+
+  const weeks = 5;
+  const slots: Bucket[] = Array.from({ length: weeks }, (_, i) => {
+    const d = new Date(startOfDayMs - (weeks - 1 - i) * 7 * day);
+    return {
+      label: `${(d.getMonth() + 1).toString().padStart(2, "0")}-${d.getDate().toString().padStart(2, "0")}`,
+      ts: d.getTime(),
+      converted: 0,
+      notConverted: 0,
+      noAnswer: 0,
+      revenue: 0,
+    };
+  });
+  for (const p of points) {
+    const ts = Date.parse(p.period);
+    if (!Number.isFinite(ts)) continue;
+    const offsetDays = Math.round((startOfDayMs - ts) / day);
+    if (offsetDays < 0 || offsetDays >= weeks * 7) continue;
+    applyPointToSlot(slots[weeks - 1 - Math.floor(offsetDays / 7)], p);
+  }
+  return slots;
+}
+
+/** True if none of the bar segments have any calls. Used to decide
+ *  whether the calls-list bucketing failed and we should fall back to
+ *  the server-aggregated time-series. */
+function bucketsAreEmpty(buckets: Bucket[]): boolean {
+  for (const b of buckets) if (b.converted + b.noAnswer + b.notConverted > 0) return false;
+  return true;
+}
+
+export function HourlyDistribution({ calls, timeSeries }: HourlyDistributionProps) {
   const { t } = useTranslation();
   const [grain, setGrain] = React.useState<Grain>("H");
+  // Read the store's cached time-series as a fallback when the caller
+  // didn't pass one in explicitly. The store is hydrated on app mount
+  // (see `store-hydrator.tsx`) so this is nearly always populated.
+  const storeTimeSeries = useCallsStore((s) => s.timeSeries);
+  const effectiveTimeSeries = timeSeries ?? storeTimeSeries;
   // Track the actual CHART CONTAINER width via ResizeObserver — the
   // viewport can be 1200px while the chart card only gets ~600px because
   // of the sidebar + donut neighbour. Three tiers:
@@ -178,14 +290,27 @@ export function HourlyDistribution({ calls }: HourlyDistributionProps) {
   // Buckets + a derived `total` field so the LabelList on the topmost bar
   // can render the column's full call count above the stack (matching the
   // advertising reference: "181 · 267 · 444 · 607 · …" labels per column).
-  const data = React.useMemo(
-    () =>
-      bucketize(calls, grain).map((b) => ({
-        ...b,
-        total: b.converted + b.notConverted + b.noAnswer,
-      })),
-    [calls, grain],
-  );
+  //
+  // Primary source: the client-side calls list (respects the reports
+  // page's date-range + campaign/buyer/publisher filters).
+  //
+  // Fallback: server-aggregated time-series. Kicks in when bucketing the
+  // calls list produced an empty chart — either the paginated call log
+  // hasn't loaded, no calls landed in the selected window, or a field
+  // mismatch is zeroing out `startedAt`. Whichever way, the bars still
+  // render something instead of a blank canvas.
+  const data = React.useMemo(() => {
+    const fromCalls = bucketize(calls, grain);
+    const useFallback =
+      bucketsAreEmpty(fromCalls) && effectiveTimeSeries.length > 0;
+    const buckets = useFallback
+      ? bucketizeTimeSeries(effectiveTimeSeries, grain)
+      : fromCalls;
+    return buckets.map((b) => ({
+      ...b,
+      total: b.converted + b.notConverted + b.noAnswer,
+    }));
+  }, [calls, grain, effectiveTimeSeries]);
 
   return (
     <Card>

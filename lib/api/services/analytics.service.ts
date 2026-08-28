@@ -131,12 +131,34 @@ function toNum(s: string | number | undefined, fallback = 0): number {
 }
 
 function toTs(s: string | number | undefined): number {
-  if (typeof s === "number") return s;
+  if (typeof s === "number") {
+    // Some backends serialize unix timestamps as SECONDS (10-digit ints)
+    // instead of milliseconds. Any number below ~year-2286 in ms is
+    // actually seconds — bump it to ms so timezone bucketing lands on
+    // the right day instead of 1970. Modern ms timestamps are ~13 digits
+    // (1.7e12+), unix-seconds are 10 digits (1.7e9).
+    if (s > 0 && s < 1e12) return s * 1000;
+    return s;
+  }
   if (typeof s === "string") {
+    // Numeric-only string = probably a stringified unix timestamp; parse
+    // as number and reapply the seconds-vs-ms heuristic above.
+    if (/^\d+$/.test(s)) {
+      const n = Number(s);
+      if (Number.isFinite(n)) return n < 1e12 ? n * 1000 : n;
+    }
     const t = Date.parse(s);
     return Number.isFinite(t) ? t : Date.now();
   }
   return Date.now();
+}
+
+/** Pick the first defined-and-non-null value from a list of candidates.
+ *  Used to tolerate backend field-name drift — `duration` vs `durationSec`
+ *  vs `talkTime`, `recordingUrl` vs `recordingUri`, etc. */
+function pickFirst<T>(...values: Array<T | null | undefined>): T | undefined {
+  for (const v of values) if (v !== null && v !== undefined) return v;
+  return undefined;
 }
 
 function normalizeStatus(raw: string | null | undefined): CallStatus {
@@ -151,6 +173,42 @@ function normalizeStatus(raw: string | null | undefined): CallStatus {
 }
 
 function callRecordToCall(w: CallRecordWire): Call {
+  // Tolerate common backend field-name variants. The contract says
+  // `duration` + `recording_url`, but real deployments have shown up with
+  // `duration_sec`, `talk_time`, `recording_uri`, or nested
+  // `recording.url` / `metrics.duration`. Read the wire loosely so a
+  // rename on the backend doesn't blank the whole column silently.
+  const wl = w as unknown as Record<string, unknown>;
+  const metrics = (wl.metrics as Record<string, unknown> | undefined) ?? undefined;
+  const recording = (wl.recording as Record<string, unknown> | undefined) ?? undefined;
+
+  const durationRaw = pickFirst<unknown>(
+    wl.duration,
+    wl.durationSec,      // snake `duration_sec`
+    wl.durationSeconds,  // snake `duration_seconds`
+    wl.talkTime,         // snake `talk_time`
+    wl.talkTimeSec,      // snake `talk_time_sec`
+    wl.callDuration,     // snake `call_duration`
+    metrics?.duration,
+    metrics?.durationSec,
+  );
+
+  const recordingRaw = pickFirst<unknown>(
+    wl.recordingUrl,
+    wl.recordingUri,     // snake `recording_uri`
+    wl.recordUrl,        // snake `record_url`
+    recording?.url,      // nested `recording.url`
+    recording?.uri,      // nested `recording.uri`
+  );
+
+  const createdRaw = pickFirst<unknown>(
+    wl.createdAt,
+    wl.startedAt,        // snake `started_at`
+    wl.callStartedAt,    // snake `call_started_at`
+    wl.timestamp,
+    wl.callTime,         // snake `call_time`
+  );
+
   return {
     id: w.id,
     campaignId: w.campaignId ?? "",
@@ -161,8 +219,8 @@ function callRecordToCall(w: CallRecordWire): Call {
     publisherName: w.publisherName ?? undefined,
     callerNumber: w.callerNumber,
     destinationNumber: w.destinationNumber,
-    startedAt: toTs(w.createdAt),
-    durationSec: w.duration ?? 0,
+    startedAt: toTs(createdRaw as string | number | undefined),
+    durationSec: toNum(durationRaw as string | number | undefined),
     status: normalizeStatus(w.status),
     payout: toNum(w.buyerPayout),
     revenue: toNum(w.revenue),
@@ -170,7 +228,9 @@ function callRecordToCall(w: CallRecordWire): Call {
       country: w.callerCountry ?? "",
       state: w.callerState ?? undefined,
     },
-    recordingUrl: w.recordingUrl || undefined,
+    recordingUrl: typeof recordingRaw === "string" && recordingRaw.length > 0
+      ? recordingRaw
+      : undefined,
   };
 }
 
