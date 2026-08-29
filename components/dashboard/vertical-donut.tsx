@@ -7,6 +7,7 @@ import { Card, CardContent } from "@/components/ui/card";
 import { useTranslation } from "@/hooks/use-translation";
 import { TODAY_HOURLY } from "@/lib/mock/timeseries";
 import { formatNumber } from "@/lib/format";
+import { useCallsStore } from "@/lib/store/calls-store";
 import type { Call } from "@/lib/types";
 
 interface VerticalDonutProps {
@@ -24,23 +25,37 @@ const DROP_SWATCH = "var(--destructive)";
 
 export function VerticalDonut({ calls }: VerticalDonutProps = {}) {
   const { t } = useTranslation();
+  // KPI snapshot — used as a fallback so the donut headline is never a
+  // stark "0" while `/api/analytics/calls` is mid-flight or the caller
+  // passed an empty array. Reading from the same store the topbar uses
+  // keeps the two counters agreeing with each other.
+  const kpis = useCallsStore((s) => s.kpis);
   const { total, completed, dropped } = useMemo(() => {
-    if (calls) {
-      // Match the topbar TOTAL — only count calls that started today, so the
-      // donut headline stays in sync with the topbar's "today" counter and
-      // the hourly chart above it.
-      const startOfToday = new Date();
-      startOfToday.setHours(0, 0, 0, 0);
-      const startMs = startOfToday.getTime();
-      const today = calls.filter((c) => c.startedAt >= startMs);
-      const all = today.length;
-      const ok = today.filter((c) => c.status === "completed").length;
+    // Preferred source: the date-range-scoped `calls` prop from the
+    // parent Dashboard page. Trust that filter — do NOT layer an extra
+    // "today only" cutoff on top of it, because that used to zero the
+    // donut whenever the operator selected any range other than today
+    // (e.g. Yesterday / Last 7d) even though every other widget on the
+    // page happily rendered the same slice.
+    if (calls && calls.length > 0) {
+      const all = calls.length;
+      const ok = calls.filter((c) => c.status === "completed").length;
       return { total: all, completed: ok, dropped: Math.max(0, all - ok) };
     }
-    const all = TODAY_HOURLY.reduce((s, p) => s + p.calls, 0);
-    const ok = TODAY_HOURLY.reduce((s, p) => s + p.conversions, 0);
-    return { total: all, completed: ok, dropped: Math.max(0, all - ok) };
-  }, [calls]);
+    // Fallback 1: KPI snapshot from /api/analytics/dashboard. Keeps the
+    // donut in sync with the topbar TOTAL when the paginated call log
+    // hasn't loaded yet.
+    if (kpis && kpis.callsToday > 0) {
+      const all = kpis.callsToday;
+      const ok = kpis.completedCalls || kpis.convertedCalls || 0;
+      return { total: all, completed: ok, dropped: Math.max(0, all - ok) };
+    }
+    // Fallback 2: bundled mock (no live data anywhere). Preserves the
+    // marketing-style empty-state visual instead of a bare "0" ring.
+    const allMock = TODAY_HOURLY.reduce((s, p) => s + p.calls, 0);
+    const okMock = TODAY_HOURLY.reduce((s, p) => s + p.conversions, 0);
+    return { total: allMock, completed: okMock, dropped: Math.max(0, allMock - okMock) };
+  }, [calls, kpis]);
 
   const slices = [
     { key: "completed", label: t("dashboard.donut.completed"), count: completed, fill: SUCCESS_FILL, swatch: SUCCESS_SWATCH },
