@@ -193,12 +193,27 @@ function callRecordToCall(w: CallRecordWire): Call {
     metrics?.durationSec,
   );
 
+  // Recording URL can arrive under a fairly wide set of names. Also
+  // check `recordings` — some backends expose an ARRAY of recording
+  // segments and put the primary URL on the first element.
+  const recordings = Array.isArray(wl.recordings)
+    ? (wl.recordings as unknown[])
+    : undefined;
+  const firstRecording =
+    recordings && recordings.length > 0 && typeof recordings[0] === "object" && recordings[0] !== null
+      ? (recordings[0] as Record<string, unknown>)
+      : undefined;
   const recordingRaw = pickFirst<unknown>(
     wl.recordingUrl,
     wl.recordingUri,     // snake `recording_uri`
     wl.recordUrl,        // snake `record_url`
+    wl.audioUrl,         // snake `audio_url`
+    wl.mediaUrl,         // snake `media_url`
+    wl.callRecordingUrl, // snake `call_recording_url`
     recording?.url,      // nested `recording.url`
     recording?.uri,      // nested `recording.uri`
+    firstRecording?.url, // `recordings[0].url`
+    firstRecording?.uri, // `recordings[0].uri`
   );
 
   const createdRaw = pickFirst<unknown>(
@@ -235,19 +250,47 @@ function callRecordToCall(w: CallRecordWire): Call {
 }
 
 function dashboardWireToKpis(w: DashboardWire): DashboardKpis {
+  // Tolerate common backend field-name variants so a rename or a
+  // slightly-different response shape doesn't silently zero the topbar
+  // TOTAL / LIVE counters (which read from this KPI object).
+  const wl = w as unknown as Record<string, unknown>;
+  const num = (v: unknown, fb = 0): number => {
+    if (typeof v === "number" && Number.isFinite(v)) return v;
+    if (typeof v === "string") {
+      const n = Number(v);
+      return Number.isFinite(n) ? n : fb;
+    }
+    return fb;
+  };
   return {
-    totalCalls: w.totalCalls,
-    callsToday: w.callsToday,
-    liveCalls: w.liveCalls,
-    completedCalls: w.completedCalls,
-    convertedCalls: w.convertedCalls,
-    conversionRate: w.conversionRate,
-    totalRevenue: toNum(w.totalRevenue),
-    totalPayout: toNum(w.totalPayout),
-    totalProfit: toNum(w.totalProfit),
-    avgCallDurationSec: w.avgCallDuration,
-    spamBlocked: w.spamBlocked,
-    duplicateBlocked: w.duplicateBlocked,
+    totalCalls: num(pickFirst<unknown>(wl.totalCalls, wl.total, wl.count, wl.callsTotal)),
+    callsToday: num(pickFirst<unknown>(
+      wl.callsToday,
+      wl.todayCalls,     // snake `today_calls`
+      wl.totalCallsToday,// snake `total_calls_today`
+      wl.dailyCalls,     // snake `daily_calls`
+      wl.totalCalls,     // last resort — dashboards without a day breakdown
+    )),
+    liveCalls: num(pickFirst<unknown>(
+      wl.liveCalls,
+      wl.activeCalls,    // snake `active_calls`
+      wl.inFlightCalls,  // snake `in_flight_calls`
+      wl.currentCalls,   // snake `current_calls`
+    )),
+    completedCalls: num(pickFirst<unknown>(wl.completedCalls, wl.completed)),
+    convertedCalls: num(pickFirst<unknown>(wl.convertedCalls, wl.converted, wl.convertedCount)),
+    conversionRate: num(pickFirst<unknown>(wl.conversionRate, wl.convRate, wl.conversion)),
+    totalRevenue: toNum(pickFirst<string | number | undefined>(w.totalRevenue, wl.revenue as string | number | undefined)),
+    totalPayout: toNum(pickFirst<string | number | undefined>(w.totalPayout, wl.payout as string | number | undefined)),
+    totalProfit: toNum(pickFirst<string | number | undefined>(w.totalProfit, wl.profit as string | number | undefined)),
+    avgCallDurationSec: num(pickFirst<unknown>(
+      wl.avgCallDuration,
+      wl.avgDuration,
+      wl.avgDurationSec,
+      wl.averageCallDuration,
+    )),
+    spamBlocked: num(pickFirst<unknown>(wl.spamBlocked, wl.blockedSpam)),
+    duplicateBlocked: num(pickFirst<unknown>(wl.duplicateBlocked, wl.blockedDuplicate)),
   };
 }
 

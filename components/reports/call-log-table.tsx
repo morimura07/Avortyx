@@ -17,6 +17,7 @@ import {
 import { toast } from "sonner";
 
 import { ExportMenu } from "@/components/shared/export-menu";
+import { getDemoTimezone } from "@/lib/demo/tz";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
@@ -107,16 +108,37 @@ const ALL_VISIBLE: Record<ColumnKey, boolean> = COLUMNS.reduce(
   {} as Record<ColumnKey, boolean>,
 );
 
-function timeLabel(ts: number) {
-  const d = new Date(ts);
-  const month = d.toLocaleString("en-US", { month: "short" });
-  const day = d.getDate();
-  let h = d.getHours();
-  const m = d.getMinutes().toString().padStart(2, "0");
-  const s = d.getSeconds().toString().padStart(2, "0");
-  const ampm = h >= 12 ? "PM" : "AM";
-  h = h % 12 || 12;
-  return `${month} ${day}, ${h}:${m}:${s} ${ampm}`;
+/**
+ * Format a call timestamp for the Call Log's first column.
+ *
+ * IMPORTANT: The other Reports-page charts (HourlyDistribution, donut)
+ * already honor the user's selected demo/account timezone via
+ * `getDemoTimezone()`. Previously this helper used `d.getHours()` /
+ * `d.getDate()` — which read the **browser's** local timezone — so a
+ * client browser in UTC+8 while the account tz was UTC would see the
+ * Call Log times drift by 8 hours relative to every other chart on the
+ * same page. Route the formatting through `Intl.DateTimeFormat` in the
+ * selected tz so every surface renders the same wall-clock time.
+ */
+function timeLabel(ts: number, tz: string) {
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone: tz,
+    month: "short",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: true,
+  }).formatToParts(new Date(ts));
+  const get = (type: Intl.DateTimeFormatPartTypes) =>
+    parts.find((p) => p.type === type)?.value ?? "";
+  const month = get("month");
+  const day = get("day");
+  const hour = get("hour");
+  const minute = get("minute");
+  const second = get("second");
+  const ampm = get("dayPeriod").toUpperCase();
+  return `${month} ${day}, ${hour}:${minute}:${second} ${ampm}`;
 }
 
 const STATUS_LABEL_FALLBACK: Record<CallStatus, string> = {
@@ -266,6 +288,11 @@ export function CallLogTable({ calls, limit = 50 }: CallLogTableProps) {
   const { t } = useTranslation();
   const [query, setQuery] = React.useState("");
   const [columns, setColumns] = React.useState<Record<ColumnKey, boolean>>(ALL_VISIBLE);
+  // Route all call-time formatting through the user-selected demo/
+  // account timezone (same source the HourlyDistribution + donut use)
+  // so the Call Log's first column agrees with every other chart on
+  // the page instead of drifting to whatever the browser locale is.
+  const tz = getDemoTimezone();
   const [pageSize, setPageSize] = React.useState<number>(limit);
   const [page, setPage] = React.useState(0);
 
@@ -452,7 +479,7 @@ export function CallLogTable({ calls, limit = 50 }: CallLogTableProps) {
                   return (
                     <TableRow key={c.id}>
                       <TableCell className="pl-6 whitespace-nowrap font-mono text-xs text-muted-foreground tabular-nums">
-                        {timeLabel(c.startedAt)}
+                        {timeLabel(c.startedAt, tz)}
                       </TableCell>
                       {columns.campaign && (
                         <TableCell className="whitespace-nowrap font-medium">{c.campaignName}</TableCell>

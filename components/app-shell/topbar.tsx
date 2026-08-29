@@ -1,5 +1,6 @@
 "use client";
 
+import * as React from "react";
 import { Command, PhoneCall, PhoneIncoming, Search, Wallet } from "lucide-react";
 
 import { NotificationsMenu } from "./notifications-menu";
@@ -19,12 +20,31 @@ export function Topbar() {
   // hydrated on app mount by <StoreHydrator />. Zero values render until the
   // first response lands; that's accurate, not a degraded state.
   const kpis = useCallsStore((s) => s.kpis);
+  // Fall back to the calls list when the dashboard endpoint hasn't
+  // hydrated (or ships zeros) so the topbar TOTAL is never dead-zero
+  // while the Reports page next door clearly has data. `recent` is the
+  // same slice both dashboard charts and the Call Log page consume, so
+  // the fallback stays consistent with the rest of the UI.
+  const recentCalls = useCallsStore((s) => s.recent);
+  const callsTodayFromRecent = React.useMemo(() => {
+    const startOfToday = new Date();
+    startOfToday.setHours(0, 0, 0, 0);
+    const startMs = startOfToday.getTime();
+    let n = 0;
+    for (const c of recentCalls) if (c.startedAt >= startMs) n++;
+    return n;
+  }, [recentCalls]);
+  const liveFromRecent = React.useMemo(() => {
+    let n = 0;
+    for (const c of recentCalls) if (c.status === "ringing" || c.status === "in-progress") n++;
+    return n;
+  }, [recentCalls]);
   // Wallet balance comes from the billing account fetched by the onboarding
   // store on mount (and refreshed after every recharge). Renders 0 until the
   // first response lands.
   const balance = useOnboardingStore((s) => s.balance);
-  const liveCalls = kpis?.liveCalls ?? 0;
-  const totalCalls = kpis?.callsToday ?? 0;
+  const liveCalls = kpis?.liveCalls || liveFromRecent;
+  const totalCalls = kpis?.callsToday || callsTodayFromRecent;
 
   return (
     <header className="sticky top-0 z-30 border-b border-border/50 bg-background/85 backdrop-blur-xl">
